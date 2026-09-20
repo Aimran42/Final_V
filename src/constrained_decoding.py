@@ -3,9 +3,12 @@
 import json
 from typing import Any, Callable
 
-import numpy as np
+try:
+    import numpy as np
+    from llm_sdk.llm_sdk import Small_LLM_Model
+except ImportError as err:
+    print(f"Import Error:{err}")
 
-from llm_sdk.llm_sdk import Small_LLM_Model
 from src.models import FunctionDefinition
 
 

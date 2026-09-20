@@ -80,6 +80,11 @@ class Parser:
             List of validated FunctionDefinition models.
         """
         raw_data = Parser.load_json_file(path)
+        objects = [FunctionDefinition(**item) for item in raw_data]
+        fn_names = [obj.name for obj in objects]
+        duplicates = [fn for fn in fn_names if fn_names.count(fn) > 1]
+        if duplicates:
+            raise ParsingErr(f"duplicate function name {duplicates[0]}")
         if not isinstance(raw_data, list):
             raise ParsingErr(f"{path} must contain a JSON array")
         return [FunctionDefinition(**item) for item in raw_data]
