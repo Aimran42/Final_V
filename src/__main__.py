@@ -42,3 +42,5 @@ if __name__ == "__main__":
         print(f"Error : {e}")
     except json.JSONDecodeError as e:
         print(f"Invalid Json: {e}")
+    except ValueError as err:
+        print(f"Value eror : {err}")
