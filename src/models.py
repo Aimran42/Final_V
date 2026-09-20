@@ -1,11 +1,11 @@
-from typing import Dict, Any
+from typing import Dict, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class FunctionParameter(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: str
+    type: Literal["string", "integer", "float", "boolean", "number"]
 
 
 class FunctionDefinition(BaseModel):
@@ -29,7 +29,13 @@ class FunctionDefinition(BaseModel):
 
 class TestPrompt(BaseModel):
     prompt: str
+    model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="after")
+    def validate_fields(self) -> "TestPrompt":
+        if not self.prompt.strip():
+            raise ValueError("prompt field cannot be empty or contain only spaces")
+        return self
 
 class FunctionCallResult(BaseModel):
     prompt: str
