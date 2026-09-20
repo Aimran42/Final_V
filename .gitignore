@@ -1,6 +1,7 @@
 __pycache__
 .mypy_cache
-.cache/
+moulinette.zip
+.cache
 .venv
 .practice
 data/output
