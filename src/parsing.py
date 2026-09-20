@@ -1,7 +1,8 @@
 from src.models import FunctionDefinition, TestPrompt
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Dict
 from pathlib import Path
 import argparse
+import keyword
 import json
 
 
@@ -44,6 +45,18 @@ class Parser:
         return parser.parse_args()
 
     @staticmethod
+    def check_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+        """Cheeking duplicate keys"""
+        seen: set = set()
+        for key, _ in pairs:
+            if not key or keyword.iskeyword(key):
+                raise ParsingErr(f"Invalid key: '{key}'")
+            if key in seen:
+                raise ParsingErr(f"Duplicate key: '{key}'")
+            seen.add(key)
+        return dict(pairs)
+
+    @staticmethod
     def load_json_file(path: str) -> Any:
         """Load and parse content from a JSON file.
         Args:
@@ -56,7 +69,7 @@ class Parser:
         if not file_path.is_file():
             raise ParsingErr(f"File not found: {path}")
         with file_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            return json.load(f, object_pairs_hook=Parser.check_keys)
 
     @staticmethod
     def parse_functions_definition(path: str) -> List[FunctionDefinition]:
