@@ -65,6 +65,8 @@ class Parser:
     def parse_function_calling_tests(path: str) -> List[TestPrompt]:
         try:
             raw_data = Parser.load_json_file(path)
+            if isinstance(raw_data, dict):
+                raw_data = [raw_data]
             if not isinstance(raw_data, list):
                 raise ParsingErr(f"{path} must contain a JSON array")
             return [TestPrompt(**item) for item in raw_data]
