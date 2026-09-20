@@ -11,7 +11,6 @@ import json
 
 
 def main() -> int:
-    print("test test")
     lst = src.Parser().parsing()
 
     if not lst:

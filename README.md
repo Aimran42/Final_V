@@ -168,7 +168,11 @@ is deterministic and enforceable regardless of model size.
   inference itself as the remaining cost. Step budgets are kept small
   (32 steps for function-name generation) to stay within a reasonable
   time budget across all test prompts.
-
+- **Time**
+```python
+    if pl.processing_seconds is not None:
+        print(f"Processed all prompts in {pl.processing_seconds:.2f} seconds")
+```
 ## Challenges Faced
 
 - **Initial constrained decoding was far too slow.** The first
