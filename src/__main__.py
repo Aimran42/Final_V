@@ -11,6 +11,7 @@ import json
 
 
 def main() -> int:
+    print("test test")
     lst = src.Parser().parsing()
 
     if not lst:
@@ -38,9 +39,15 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nInterrupted, exiting.")
-    except src.ParsingErr as e:
-        print(f"Error : {e}")
-    except json.JSONDecodeError as e:
-        print(f"Invalid Json: {e}")
-    except ValueError as err:
-        print(f"Value eror : {err}")
+        raise SystemExit(1)
+    except (
+        src.ParsingErr,
+        json.JSONDecodeError,
+        OSError,
+        ValueError,
+    ) as error:
+        print(f"Error: {error}")
+        raise SystemExit(1)
+    except Exception as error:
+        print(f"Unexpected error: {error}")
+        raise SystemExit(1)

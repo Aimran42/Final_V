@@ -20,19 +20,19 @@ class Pipeline:
         return Small_LLM_Model()
 
     def load_decoder(self) -> Optional[ConstrainedDecoder]:
-        try:
-            self.decoder = ConstrainedDecoder(self.load_model())
-        except Exception as e:
-            print(f"Error: could not load model: {e}")
-            self.decoder = None
+        self.decoder = ConstrainedDecoder(self.load_model())
         return self.decoder
 
     def process_test(self, test: TestPrompt) -> Optional[FunctionCallResult]:
         if self.decoder is None:
             return None
         function = self.decoder.select_function(test.prompt, self.functions)
-        return FunctionCallResult(prompt=test.prompt,
-                                  name=function.name, parameters={})
+        parameters = self.decoder.decode_arguments(test.prompt, function)
+        return FunctionCallResult(
+            prompt=test.prompt,
+            name=function.name,
+            parameters=parameters,
+        )
 
     def process_all_tests(self) -> List[FunctionCallResult]:
         results: List[FunctionCallResult] = []
@@ -43,15 +43,19 @@ class Pipeline:
         return results
 
     def write_results(self, results: List[FunctionCallResult]) -> None:
-        try:
-            with open(self.output_path, "w", encoding="utf-8") as f:
-                json.dump([r.model_dump() for r in results], f, indent=2)
-        except OSError as e:
-            print(f"Error in output file:\n{e}")
+        with open(self.output_path, "w", encoding="utf-8") as output_file:
+            json.dump(
+                [result.model_dump() for result in results],
+                output_file,
+                indent=2,
+            )
 
     def run(self) -> List[FunctionCallResult]:
         if self.load_decoder() is None:
             return []
         results = self.process_all_tests()
+        if len(results) != len(self.tests):
+            print("Error: not all prompts produced valid function calls")
+            return []
         self.write_results(results)
         return results
