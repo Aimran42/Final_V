@@ -1,18 +1,24 @@
 from src.models import FunctionDefinition, TestPrompt
-from typing import Any, List, Optional, Tuple
-from pydantic import ValidationError
+from typing import Any, List, Tuple
 from pathlib import Path
-
 import argparse
 import json
 
 
 class ParsingErr(Exception):
+    """Custom exception raised when file loading or parsing fails."""
     pass
 
 
 class Parser:
+    """Parser class for handling arguments, loading JSON files """
+
     def parse_args(self) -> argparse.Namespace:
+        """Parse command-line arguments for input and output file paths.
+
+        Returns:
+            argparse.Namespace: Parsed command-line arguments.
+        """
         parser = argparse.ArgumentParser(
             prog="src",
             description="Run function-calling tests against function def",
@@ -39,61 +45,64 @@ class Parser:
 
     @staticmethod
     def load_json_file(path: str) -> Any:
-        try:
-            file_path = Path(path)
-            if not file_path.is_file():
-                raise ParsingErr(f"File not found: {path}")
-            with file_path.open("r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError as e:
-            raise ParsingErr(f"Invalid JSON in {path}: {e}") from e
-        except OSError as e:
-            raise ParsingErr(f"Could not read {path}: {e}") from e
+        """Load and parse content from a JSON file.
+        Args:
+            path (str): File system path to the JSON file.
+
+        Returns:
+            Any: Parsed JSON data structure (dict or list).
+        """
+        file_path = Path(path)
+        if not file_path.is_file():
+            raise ParsingErr(f"File not found: {path}")
+        with file_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
 
     @staticmethod
     def parse_functions_definition(path: str) -> List[FunctionDefinition]:
-        try:
-            raw_data = Parser.load_json_file(path)
-            if not isinstance(raw_data, list):
-                raise ParsingErr(f"{path} must contain a JSON array")
-            return [FunctionDefinition(**item) for item in raw_data]
-        except ValidationError as err:
-            raise ParsingErr(
-                f"Invalid function definition in {path}: {err}") from err
+        """Parse and validate function definitions from a JSON file.
+        Args:
+            path (str): Path to the function definitions JSON file.
+
+        Returns:
+            List of validated FunctionDefinition models.
+        """
+        raw_data = Parser.load_json_file(path)
+        if not isinstance(raw_data, list):
+            raise ParsingErr(f"{path} must contain a JSON array")
+        return [FunctionDefinition(**item) for item in raw_data]
 
     @staticmethod
     def parse_function_calling_tests(path: str) -> List[TestPrompt]:
-        try:
-            raw_data = Parser.load_json_file(path)
-            if isinstance(raw_data, dict):
-                raw_data = [raw_data]
-            if not isinstance(raw_data, list):
-                raise ParsingErr(f"{path} must contain a JSON array")
-            return [TestPrompt(**item) for item in raw_data]
-        except ValidationError as e:
-            raise ParsingErr(f"Invalid test prompt in {path}: {e}") from e
+        """Parse and validate test prompts from a JSON file.
+        Args:
+            path (str): Path to the test prompts JSON file.
 
-    def parsing(self) -> Optional[Tuple[List[Any], List[Any], Path]]:
+        Returns:
+            List[TestPrompt]: List of validated TestPrompt models.
+        """
+        raw_data = Parser.load_json_file(path)
+        if isinstance(raw_data, dict):
+            raw_data = [raw_data]
+        if not isinstance(raw_data, list):
+            raise ParsingErr(f"{path} must contain a JSON array")
+        return [TestPrompt(**item) for item in raw_data]
+
+    def parsing(self) -> Tuple[List[FunctionDefinition],
+                               List[TestPrompt], Path]:
+        """Execute the complete parsing pipeline: parse CLI arguments,
+                load inputs, and initialize the output file.
+        """
         args = Parser.parse_args(self)
 
-        try:
-            ft = Parser.parse_functions_definition(args.functions_definition)
-            tests = Parser.parse_function_calling_tests(args.input)
-        except ParsingErr as e:
-            print(f"Error: {e}")
-            return None
+        ft = Parser.parse_functions_definition(args.functions_definition)
+        tests = Parser.parse_function_calling_tests(args.input)
 
-        results = []
-        for test in tests:
-            results.append(test.model_dump())
+        results = [test.model_dump() for test in tests]
 
-        try:
-            output_path = Path(args.output)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("w", encoding="utf-8") as f:
-                json.dump(results, f, indent=2)
-        except OSError as e:
-            print(f"Error in output file :\n{e}")
-            return None
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
 
         return (ft, tests, output_path)

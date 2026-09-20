@@ -7,32 +7,38 @@ writes the results to the configured output path.
 """
 
 import src
+import json
 
 
 def main() -> int:
-    try:
-        lst = src.Parser().parsing()
-        if not lst:
-            return 1
+    lst = src.Parser().parsing()
 
-        functions, tests, output_path = lst
-        pl = src.Pipeline(functions, tests, output_path)
+    if not lst:
+        return 1
 
-        print("\n_____________________SUMMARY_____________________\n")
-        print(f"Loaded {len(functions)} function definitions")
-        print(f"Loaded {len(tests)} test prompts")
+    functions, tests, output_path = lst
+    pl = src.Pipeline(functions, tests, output_path)
 
-        results = pl.run()
-        if not results:
-            print("Error: no results were generated")
-            return 1
+    print("\n_____________________SUMMARY_____________________\n")
+    print(f"Loaded {len(functions)} function definitions")
+    print(f"Loaded {len(tests)} test prompts")
 
-        print(f"Wrote {len(results)} results to {output_path}")
-    except KeyboardInterrupt:
-        print("\nInterrupted, exiting.")
+    results = pl.run()
+    if not results:
+        print("Error: no results were generated")
+        return 1
+
+    print(f"Wrote {len(results)} results to {output_path}")
 
     return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted, exiting.")
+    except src.ParsingErr as e:
+        print(f"Error : {e}")
+    except json.JSONDecodeError as e:
+        print(f"Invalid Json: {e}")
