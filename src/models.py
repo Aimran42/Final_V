@@ -34,8 +34,11 @@ class TestPrompt(BaseModel):
     @model_validator(mode="after")
     def validate_fields(self) -> "TestPrompt":
         if not self.prompt.strip():
-            raise ValueError("prompt field cannot be empty or contain only spaces")
+            raise ValueError(
+                "prompt field cannot be empty or contain only spaces"
+            )
         return self
+
 
 class FunctionCallResult(BaseModel):
     prompt: str

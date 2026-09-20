@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -15,6 +16,7 @@ class Pipeline:
         self.tests = tests
         self.output_path = output_path
         self.decoder: Optional[ConstrainedDecoder] = None
+        self.processing_seconds: Optional[float] = None
 
     def load_model(self) -> Small_LLM_Model:
         return Small_LLM_Model()
@@ -51,6 +53,7 @@ class Pipeline:
             )
 
     def run(self) -> List[FunctionCallResult]:
+        started_at = time.perf_counter()
         if self.load_decoder() is None:
             return []
         results = self.process_all_tests()
@@ -58,4 +61,5 @@ class Pipeline:
             print("Error: not all prompts produced valid function calls")
             return []
         self.write_results(results)
+        self.processing_seconds = time.perf_counter() - started_at
         return results

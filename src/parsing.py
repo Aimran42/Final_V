@@ -2,7 +2,6 @@ from src.models import FunctionDefinition, TestPrompt
 from typing import Any, List, Tuple, Dict
 from pathlib import Path
 import argparse
-import keyword
 import json
 
 
@@ -49,7 +48,7 @@ class Parser:
         """Cheeking duplicate keys"""
         seen: set = set()
         for key, _ in pairs:
-            if not key or keyword.iskeyword(key):
+            if not key:
                 raise ParsingErr(f"Invalid key: '{key}'")
             if key in seen:
                 raise ParsingErr(f"Duplicate key: '{key}'")

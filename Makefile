@@ -16,10 +16,6 @@ lint:
 		--ignore-missing-imports --disallow-untyped-defs \
 		--check-untyped-defs
 
-lint-strict:
-	@$(PYTHON) -m mypy . --strict
-	@$(PYTHON) -m flake8 .
-
 debug:
 	@$(PYTHON) -m pdb -m src
 
@@ -27,6 +23,3 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	rm -fr data/output
 	rm -fr .mypy_cache
-
-
-.PHONY: all install run lint lint-strict debug clean

@@ -1,8 +1,7 @@
-"""Token-level constrained decoding for function names and arguments."""
+"""Small, schema-aware constrained decoder."""
 
 import json
-import re
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable
 
 import numpy as np
 
@@ -11,23 +10,21 @@ from src.models import FunctionDefinition
 
 
 class ConstrainedDecodingError(RuntimeError):
-    """Raised when no token can satisfy a decoding constraint."""
+    """Raised when the model cannot continue within the required grammar."""
 
 
 class TokenTrie:
-    """Prefix trie over a finite set of candidate strings."""
+    """A prefix tree used to limit output to a known list of names."""
 
-    def __init__(self, words: List[str]) -> None:
-        """Build a trie containing ``words``."""
-        self.root: Dict[str, Any] = {}
+    def __init__(self, words: list[str]) -> None:
+        self.root: dict[str, Any] = {}
         for word in words:
             node = self.root
             for character in word:
                 node = node.setdefault(character, {})
-            node["$"] = True
+            node["end"] = True
 
-    def is_prefix(self, text: str) -> bool:
-        """Return whether ``text`` is a prefix in this trie."""
+    def accepts_prefix(self, text: str) -> bool:
         node = self.root
         for character in text:
             if character not in node:
@@ -35,256 +32,216 @@ class TokenTrie:
             node = node[character]
         return True
 
-    def is_complete(self, text: str) -> bool:
-        """Return whether ``text`` is a complete word in this trie."""
+    def accepts_word(self, text: str) -> bool:
         node = self.root
         for character in text:
             if character not in node:
                 return False
             node = node[character]
-        return "$" in node
+        return bool(node.get("end"))
 
 
 class ConstrainedDecoder:
-    """Decodes LLM logits with strict schema constraints."""
+    """Generate a valid function name and a valid typed JSON object."""
 
     def __init__(self, model: Small_LLM_Model) -> None:
         self.model = model
-        self.vocab = self._load_vocab()
-        self.token_text_cache: Dict[int, str] = {}
+        self.token_text: dict[int, str] = {}
 
-    def _load_vocab(self) -> Dict[int, str]:
-        with open(
-            self.model.get_path_to_vocab_file(), "r", encoding="utf-8"
-        ) as vocab_file:
-            vocab: Dict[str, int] = json.load(vocab_file)
-        return {token_id: token for token, token_id in vocab.items()}
-
-    def _token_text(self, token_id: int) -> str:
-        if token_id not in self.token_text_cache:
-            if token_id not in self.vocab:
-                return ""
-            self.token_text_cache[token_id] = self.model.decode([token_id])
-        return self.token_text_cache[token_id]
+    def _decode_token(self, token_id: int) -> str:
+        """Decode a token once and cache the result."""
+        if token_id not in self.token_text:
+            self.token_text[token_id] = self.model.decode([token_id])
+        return self.token_text[token_id]
 
     def _next_token(
         self,
-        input_ids: List[int],
+        input_ids: list[int],
         generated: str,
-        is_valid_prefix: Callable[[str], bool],
-    ) -> Tuple[int, str]:
-        logits = np.asarray(
-            self.model.get_logits_from_input_ids(input_ids), dtype=float
-        )
-        masked_logits = logits.copy()
+        accepts_prefix: Callable[[str], bool],
+    ) -> tuple[int, str]:
+        """Return the highest-scoring token which preserves the grammar."""
+        logits = np.asarray(self.model.get_logits_from_input_ids(input_ids))
         for token_id in np.argsort(logits)[::-1]:
-            token_id_int = int(token_id)
-            token_text = self._token_text(token_id_int)
-            if token_text and is_valid_prefix(generated + token_text):
-                masked_logits[token_id_int] = logits[token_id_int]
-                return token_id_int, token_text
-            masked_logits[token_id_int] = -np.inf
-        raise ConstrainedDecodingError(
-            "no vocabulary token satisfies the schema"
-        )
+            token = self._decode_token(int(token_id))
+            if token and accepts_prefix(generated + token):
+                return int(token_id), token
+        raise ConstrainedDecodingError("no token satisfies the constraint")
 
     @staticmethod
     def _function_prompt(
-        prompt: str, functions: List[FunctionDefinition]
+        prompt: str, functions: list[FunctionDefinition]
     ) -> str:
         definitions = json.dumps(
             [function.model_dump() for function in functions],
-            ensure_ascii=False,
             separators=(",", ":"),
         )
         return (
             "Choose the best function for the user request. "
             "Return only its exact name.\n"
-            f"Functions: {definitions}\nUser request: {prompt}\n"
-            "Function name:"
+            f"Functions: {definitions}\nUser request: {prompt}\nFunction name:"
         )
 
     def select_function(
-        self, prompt: str, functions: List[FunctionDefinition]
+        self, prompt: str, functions: list[FunctionDefinition]
     ) -> FunctionDefinition:
         if not functions:
             raise ConstrainedDecodingError(
-                "no function definitions were supplied"
-            )
-        trie = TokenTrie([function.name for function in functions])
+                "no function definitions were supplied")
+
+        names = TokenTrie([function.name for function in functions])
         input_ids = self.model.encode(
-            self._function_prompt(prompt, functions)
-        ).tolist()[0]
+            self._function_prompt(prompt, functions)).tolist()[0]
         generated = ""
         for _ in range(64):
-            token_id, token_text = self._next_token(
-                input_ids, generated, trie.is_prefix
+            token_id, token = self._next_token(
+                input_ids, generated, names.accepts_prefix
             )
-            generated += token_text
+            generated += token
             input_ids.append(token_id)
-            if trie.is_complete(generated):
-                for function in functions:
-                    if function.name == generated:
-                        return function
-        raise ConstrainedDecodingError(
-            "could not complete a valid function name"
-        )
+            if names.accepts_word(generated):
+                return next(
+                    function for function in functions
+                    if function.name == generated
+                )
+        raise ConstrainedDecodingError("could not complete a function name")
 
     @staticmethod
-    def _match_expected_syntax(
-        text: str, start: int, literal: str
-    ) -> Tuple[bool, bool, int]:
-        remaining = text[start:]
-        if literal.startswith(remaining):
-            return True, len(remaining) == len(literal), len(text)
-        if remaining.startswith(literal):
-            return True, True, start + len(literal)
-        return False, False, start
+    def _literal_prefix(
+        text: str, position: int, literal: str
+    ) -> tuple[bool, int]:
+        """Match all or part of a fixed grammar literal."""
+        fragment = text[position:]
+        if literal.startswith(fragment):
+            if fragment != literal:
+                return True, len(text)
+            return True, position + len(literal)
+        if fragment.startswith(literal):
+            return True, position + len(literal)
+        return False, position
 
-    @classmethod
-    def _parse_json_string_prefix(
-        cls, text: str, start: int
-    ) -> Tuple[bool, bool, int]:
-        if start == len(text):
-            return True, False, start
-        if text[start] != '"':
-            return False, False, start
-        index = start + 1
-        while index < len(text):
+    @staticmethod
+    def _string_prefix(text: str, position: int) -> tuple[bool, bool, int]:
+        if position == len(text):
+            return True, False, position
+        if text[position] != '"':
+            return False, False, position
+        escaped = False
+        for index in range(position + 1, len(text)):
             character = text[index]
-            if character == '"':
-                return True, True, index + 1
             if ord(character) < 0x20:
                 return False, False, index
-            if character == "\\":
-                index += 1
-                if index == len(text):
-                    return True, False, index
-                escaped = text[index]
-                if escaped == "u":
-                    unicode_end = index + 5
-                    fragment = text[index + 1:unicode_end]
-                    if not all(
-                        char in "0123456789abcdefABCDEF" for char in fragment
-                    ):
-                        return False, False, index
-                    if unicode_end > len(text):
-                        return True, False, len(text)
-                    index = unicode_end
-                    continue
-                if escaped not in '"\\/bfnrt':
-                    return False, False, index
-            index += 1
-        return True, False, index
-
-    _INTEGER = re.compile(r"-?(?:0|[1-9][0-9]*)$")
-    _NUMBER = re.compile(
-        r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$"
-    )
-
-    @classmethod
-    def _parse_json_number_prefix(
-        cls, text: str, start: int, integer: bool
-    ) -> Tuple[bool, bool, int]:
-        index = start
-        while index < len(text) and text[index] not in ",}":
-            if text[index] not in "-+0123456789.eE":
+            if not escaped and character == '"':
+                return True, True, index + 1
+            if escaped and character not in '"\\/bfnrtu':
                 return False, False, index
-            index += 1
-        fragment = text[start:index]
-        expression = cls._INTEGER if integer else cls._NUMBER
-        complete = bool(expression.fullmatch(fragment))
-        if index < len(text):
-            return complete, complete, index
-        if complete:
-            return True, True, index
-        allowed_prefix = re.fullmatch(
-            r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][+-]?[0-9]*)?",
-            fragment,
-        )
-        if fragment in {"", "-", "0.", "-0."} or allowed_prefix:
-            return True, False, index
-        return False, False, index
-
-    @staticmethod
-    def _parse_json_boolean_prefix(
-        text: str, start: int
-    ) -> Tuple[bool, bool, int]:
-        remaining = text[start:]
-        for literal in ("true", "false"):
-            if literal.startswith(remaining):
-                return True, remaining == literal, len(text)
-            if remaining.startswith(literal):
-                return True, True, start + len(literal)
-        return False, False, start
+            escaped = not escaped if character == "\\" else False
+        return True, False, len(text)
 
     @classmethod
-    def _parse_typed_value_prefix(
-        cls, text: str, start: int, value_type: str
-    ) -> Tuple[bool, bool, int]:
+    def _number_prefix(cls, value: str, integer: bool) -> tuple[bool, bool]:
+        """Return whether ``value`` can become a JSON number and is complete.
+
+        This deliberately uses a small state machine instead of a regular
+        expression so every accepted character is easy to see.
+        """
+        index = 0
+        if value.startswith("-"):
+            index = 1
+        if index == len(value):
+            return True, False
+        if not value[index].isdigit():
+            return False, False
+
+        if value[index] == "0":
+            index += 1
+            if index < len(value) and value[index].isdigit():
+                return False, False
+        else:
+            while index < len(value) and value[index].isdigit():
+                index += 1
+
+        if integer:
+            return index == len(value), index == len(value)
+        if index == len(value):
+            return True, True
+        if value[index] == ".":
+            index += 1
+            decimal_start = index
+            while index < len(value) and value[index].isdigit():
+                index += 1
+            if index == len(value):
+                return True, index > decimal_start
+            if index == decimal_start:
+                return False, False
+        if value[index] not in "eE":
+            return False, False
+        index += 1
+        if index < len(value) and value[index] in "+-":
+            index += 1
+        exponent_start = index
+        while index < len(value) and value[index].isdigit():
+            index += 1
+        return index == len(value), index > exponent_start
+
+    @classmethod
+    def _value_prefix(
+        cls, text: str, position: int, value_type: str
+    ) -> tuple[bool, bool, int]:
         if value_type == "string":
-            return cls._parse_json_string_prefix(text, start)
+            return cls._string_prefix(text, position)
+
+        end = position
+        while end < len(text) and text[end] not in ",}":
+            end += 1
+        value = text[position:end]
         if value_type == "boolean":
-            return cls._parse_json_boolean_prefix(text, start)
-        return cls._parse_json_number_prefix(
-            text, start, value_type == "integer"
-        )
+            valid = value in {"", "t", "tr", "tru",
+                              "true", "f", "fa", "fal", "fals", "false"}
+            complete = value in {"true", "false"}
+        else:
+            valid, complete = cls._number_prefix(
+                value, value_type == "integer"
+            )
+        return valid and (end == len(text) or complete), complete, end
 
     @classmethod
     def _arguments_prefix_valid(
         cls, text: str, function: FunctionDefinition
     ) -> bool:
+        """Check a partial object against its parameter order and types."""
         position = 0
         for index, (key, parameter) in enumerate(function.parameters.items()):
-            separator = "{" if index == 0 else ","
-            key_literal = json.dumps(key, ensure_ascii=False)
-            valid, complete, position = cls._match_expected_syntax(
-                text, position, f"{separator}{key_literal}:"
-            )
+            prefix = ("{" if index == 0 else ",") + json.dumps(key) + ":"
+            valid, position = cls._literal_prefix(text, position, prefix)
+            if not valid:
+                return False
+            if position == len(text):
+                return True
+            valid, complete, position = cls._value_prefix(
+                text, position, parameter.type)
             if not valid:
                 return False
             if not complete:
                 return True
-            valid, complete, position = cls._parse_typed_value_prefix(
-                text, position, parameter.type
-            )
-            if not valid:
-                return False
-            if not complete:
-                return True
-        valid, complete, position = cls._match_expected_syntax(
-            text, position, "}"
-        )
-        return valid and (not complete or position == len(text))
+
+        valid, position = cls._literal_prefix(text, position, "}")
+        return valid and position == len(text)
 
     @classmethod
     def _arguments_complete(
         cls, text: str, function: FunctionDefinition
     ) -> bool:
-        position = 0
-        for index, (key, parameter) in enumerate(function.parameters.items()):
-            separator = "{" if index == 0 else ","
-            key_literal = json.dumps(key, ensure_ascii=False)
-            valid, complete, position = cls._match_expected_syntax(
-                text, position, f"{separator}{key_literal}:"
-            )
-            if not valid or not complete:
-                return False
-            valid, complete, position = cls._parse_typed_value_prefix(
-                text, position, parameter.type
-            )
-            if not valid or not complete:
-                return False
-        valid, complete, position = cls._match_expected_syntax(
-            text, position, "}"
-        )
-        return valid and complete and position == len(text)
+        if not cls._arguments_prefix_valid(text, function):
+            return False
+        try:
+            return isinstance(json.loads(text), dict)
+        except json.JSONDecodeError:
+            return False
 
     @staticmethod
     def _arguments_prompt(prompt: str, function: FunctionDefinition) -> str:
-        definition = json.dumps(
-            function.model_dump(), ensure_ascii=False, separators=(",", ":")
-        )
+        definition = json.dumps(function.model_dump(), separators=(",", ":"))
         return (
             "Extract the arguments for this function. "
             "Return only one JSON object.\n"
@@ -293,67 +250,53 @@ class ConstrainedDecoder:
 
     @staticmethod
     def _validate_arguments(
-        arguments: Dict[str, Any], function: FunctionDefinition
-    ) -> Dict[str, Any]:
+        arguments: dict[str, Any], function: FunctionDefinition
+    ) -> dict[str, Any]:
         if set(arguments) != set(function.parameters):
             raise ConstrainedDecodingError(
-                "generated JSON has invalid parameter keys"
-            )
-        validated: Dict[str, Any] = {}
-        for key, parameter in function.parameters.items():
-            value = arguments[key]
+                "generated JSON has invalid parameter keys")
+        validated: dict[str, Any] = {}
+        for name, parameter in function.parameters.items():
+            value = arguments[name]
             if parameter.type == "string" and not isinstance(value, str):
                 raise ConstrainedDecodingError(
-                    f"parameter '{key}' must be a string"
-                )
+                    f"parameter '{name}' must be a string")
             if parameter.type == "boolean" and not isinstance(value, bool):
                 raise ConstrainedDecodingError(
-                    f"parameter '{key}' must be a boolean"
-                )
+                    f"parameter '{name}' must be a boolean")
             if parameter.type == "integer" and (
                 isinstance(value, bool) or not isinstance(value, int)
             ):
                 raise ConstrainedDecodingError(
-                    f"parameter '{key}' must be an integer"
-                )
-            if parameter.type in {"number", "float"} and (
+                    f"parameter '{name}' must be an integer")
+            if parameter.type in {"float", "number"} and (
                 isinstance(value, bool) or not isinstance(value, (int, float))
             ):
                 raise ConstrainedDecodingError(
-                    f"parameter '{key}' must be numeric"
-                )
-            if parameter.type in {"number", "float"}:
-                validated[key] = float(value)
-            else:
-                validated[key] = value
+                    f"parameter '{name}' must be numeric")
+            validated[name] = float(value) if parameter.type in {
+                "float", "number"} else value
         return validated
 
     def decode_arguments(
         self, prompt: str, function: FunctionDefinition
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not function.parameters:
             return {}
         input_ids = self.model.encode(
-            self._arguments_prompt(prompt, function)
-        ).tolist()[0]
+            self._arguments_prompt(prompt, function)).tolist()[0]
         generated = ""
         for _ in range(256):
-            token_id, token_text = self._next_token(
+            token_id, token = self._next_token(
                 input_ids,
                 generated,
                 lambda candidate: self._arguments_prefix_valid(
-                    candidate, function
-                ),
+                    candidate, function),
             )
-            generated += token_text
+            generated += token
             input_ids.append(token_id)
             if self._arguments_complete(generated, function):
                 parsed = json.loads(generated)
-                if not isinstance(parsed, dict):
-                    raise ConstrainedDecodingError(
-                        "arguments must be a JSON object"
-                    )
                 return self._validate_arguments(parsed, function)
         raise ConstrainedDecodingError(
-            "could not complete valid function arguments"
-        )
+            "could not complete valid function arguments")
